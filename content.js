@@ -2,10 +2,11 @@
   'use strict';
 
   const EXT = 'gnb-label-ux';
+  const VERSION = '0.1.1';
   const SELECTORS = {
     sourcePicker: 'source-picker',
-    sourceCard: '.single-source-container',
-    sourceMenu: 'button.source-item-more-button[aria-label="More"], button[aria-label*="More options"]',
+    sourceCard: '.single-source-container, .source-item-container',
+    sourceMenu: 'button.source-item-more-button[aria-label="More"], button.source-item-more-button, button[aria-label*="More options"]',
     autoLabelButtons: [
       'button[aria-label="Auto-label your sources by topic"]',
       'button[aria-label="Undo or re-label sources"]'
@@ -17,15 +18,20 @@
     renameInput: 'input.label-rename-input',
     moveTo: 'button.more-menu-move-to-labels-button',
     overlayPane: '.cdk-overlay-container .cdk-overlay-pane',
-    menuItem: '[role="menuitem"]',
-    moveCheckbox: 'input.mdc-checkbox__native-control'
+    menuItem: '[role="menuitem"], [role="menuitemcheckbox"]',
+    moveCheckbox: 'input.mdc-checkbox__native-control, input[type="checkbox"]'
   };
 
   const state = {
     lastLabelMenuPoint: null,
-    draggedSource: null,
+    injecting: false,
+    pointerId: null,
+    pointerSource: null,
+    pointerOrigin: null,
+    pointerDragging: false,
     dragTarget: null,
-    injecting: false
+    dragGhost: null,
+    suppressClicksUntil: 0
   };
 
   const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
@@ -88,8 +94,8 @@
     if (!visible(pane)) return false;
     const labels = [...pane.querySelectorAll(SELECTORS.menuItem)]
       .map(el => normalize(el.textContent).toLowerCase());
-    return labels.some(t => t === 'rename' || t.includes('rename')) &&
-      labels.some(t => t === 'remove' || t.includes('remove')) &&
+    return labels.some(t => t.includes('rename')) &&
+      labels.some(t => t.includes('remove')) &&
       labels.some(t => t.includes('emoji'));
   }
 
@@ -99,8 +105,6 @@
 
     const panes = [...document.querySelectorAll(SELECTORS.overlayPane)].filter(isLabelActionsPane);
     for (const pane of panes) {
-      // Angular Material's overlay positioning can occasionally resolve against the
-      // wrong origin. Pin this specific label-actions menu to the pointer instead.
       pane.style.setProperty('position', 'fixed', 'important');
       pane.style.setProperty('right', 'auto', 'important');
       pane.style.setProperty('bottom', 'auto', 'important');
@@ -121,7 +125,29 @@
 
   function labelNameForHeader(header) {
     const panel = header?.closest('mat-expansion-panel');
-    return normalize(panel?.querySelector(SELECTORS.labelName)?.textContent);
+    const named = normalize(panel?.querySelector(SELECTORS.labelName)?.textContent);
+    if (named) return named;
+
+    // Fallback for small DOM changes where .label-name is renamed.
+    const clone = header?.cloneNode(true);
+    clone?.querySelectorAll('button, mat-icon, [aria-hidden="true"]').forEach(el => el.remove());
+    return normalize(clone?.textContent);
+  }
+
+  function sourceDisplayName(source) {
+    const candidates = [
+      '.source-title',
+      '.source-item-title',
+      '[class*="source-title"]',
+      '[class*="source-name"]'
+    ];
+    for (const selector of candidates) {
+      const text = normalize(source.querySelector(selector)?.textContent);
+      if (text) return text;
+    }
+    const clone = source.cloneNode(true);
+    clone.querySelectorAll('button, input, mat-icon, .gnb-label-ux-drag-handle').forEach(el => el.remove());
+    return normalize(clone.textContent).slice(0, 120) || 'Source';
   }
 
   function existingLabelPanels() {
@@ -209,18 +235,27 @@
     nativeButton.parentElement.insertBefore(button, nativeButton);
   }
 
+  function makeDragHandle() {
+    const handle = document.createElement('button');
+    handle.type = 'button';
+    handle.className = `${EXT}-drag-handle`;
+    handle.setAttribute('aria-label', 'Drag source to a label');
+    handle.title = 'Drag source to a label';
+    handle.innerHTML = '<span aria-hidden="true">⠿</span>';
+    return handle;
+  }
+
   function decorateSourcesAndLabels() {
     for (const source of document.querySelectorAll(SELECTORS.sourceCard)) {
-      if (source.dataset.gnbDraggable === '1') continue;
-      source.dataset.gnbDraggable = '1';
-      source.draggable = true;
       source.classList.add(`${EXT}-source`);
-      source.title = source.title || 'Drag this source onto a label to move it';
+      source.draggable = false;
+      source.removeAttribute('draggable');
+      if (!source.querySelector(`.${EXT}-drag-handle`)) {
+        source.appendChild(makeDragHandle());
+      }
     }
 
     for (const header of document.querySelectorAll(SELECTORS.labelHeader)) {
-      if (header.dataset.gnbDroppable === '1') continue;
-      header.dataset.gnbDroppable = '1';
       header.classList.add(`${EXT}-label-drop`);
     }
   }
@@ -230,19 +265,21 @@
     state.dragTarget = null;
   }
 
-  function checkedState(item) {
-    const checkbox = item.querySelector(SELECTORS.moveCheckbox);
-    return checkbox?.checked === true;
+  function checkedState(entry) {
+    if (!entry) return false;
+    if (entry.checkbox && typeof entry.checkbox.checked === 'boolean') return entry.checkbox.checked;
+    const ariaHost = entry.item.closest('[aria-checked]') || entry.item.querySelector('[aria-checked]') || entry.item;
+    return ariaHost.getAttribute?.('aria-checked') === 'true';
   }
 
   function currentMoveItems() {
     return menuItems()
-      .filter(item => item.querySelector(SELECTORS.moveCheckbox))
       .map(item => ({
         item,
         checkbox: item.querySelector(SELECTORS.moveCheckbox),
         name: normalize(item.textContent)
-      }));
+      }))
+      .filter(entry => entry.checkbox || entry.item.getAttribute('role') === 'menuitemcheckbox');
   }
 
   function itemForLabel(items, labelName) {
@@ -254,16 +291,26 @@
 
   async function toggleMoveItem(entry) {
     if (!entry) return;
-    const control = entry.checkbox || entry.item;
-    control.click();
-    await sleep(140);
+    const before = checkedState(entry);
+    entry.item.click();
+    await waitFor(() => {
+      const items = currentMoveItems();
+      const refreshed = items.find(x => normalize(x.name).toLowerCase() === normalize(entry.name).toLowerCase());
+      return refreshed && checkedState(refreshed) !== before ? true : null;
+    }, 1200, 40);
+    await sleep(80);
+  }
+
+  function closeOpenMenu() {
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true }));
+    document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true }));
   }
 
   async function moveSourceExclusively(source, targetLabel) {
     const sourceMenu = firstVisible([SELECTORS.sourceMenu], source);
     if (!sourceMenu) {
       toast('Could not find this source’s menu.', 'error');
-      return;
+      return false;
     }
 
     sourceMenu.click();
@@ -273,8 +320,9 @@
     });
 
     if (!moveTo) {
+      closeOpenMenu();
       toast('Gemini Notebook did not expose “Move to” for this source.', 'error');
-      return;
+      return false;
     }
 
     moveTo.click();
@@ -284,105 +332,192 @@
     }, 5000);
 
     if (!ready) {
+      closeOpenMenu();
       toast(`Could not find the “${targetLabel}” label in Move to.`, 'error');
-      return;
+      return false;
     }
 
-    // 1) Ensure the drop target is selected.
+    // Dropping means MOVE: target checked, all other labels unchecked.
     let items = currentMoveItems();
     let target = itemForLabel(items, targetLabel);
-    if (target && !checkedState(target.item)) {
+    if (target && !checkedState(target)) {
       await toggleMoveItem(target);
     }
 
-    // 2) Drag/drop means MOVE, so remove every other checked label.
-    // Re-query after every toggle because Angular may refresh menu nodes.
     for (let guard = 0; guard < 80; guard++) {
       items = currentMoveItems();
-      const otherChecked = items.find(entry => {
-        const isTarget = entry === itemForLabel(items, targetLabel);
-        return !isTarget && checkedState(entry.item);
-      });
+      const refreshedTarget = itemForLabel(items, targetLabel);
+      const otherChecked = items.find(entry => entry !== refreshedTarget && checkedState(entry));
       if (!otherChecked) break;
       await toggleMoveItem(otherChecked);
     }
 
-    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true }));
+    closeOpenMenu();
+    await sleep(120);
     toast(`Moved source to “${targetLabel}”.`, 'success');
+    return true;
+  }
+
+  function createDragGhost(source) {
+    const ghost = document.createElement('div');
+    ghost.className = `${EXT}-drag-ghost`;
+    ghost.innerHTML = `<span aria-hidden="true">📄</span><span>${escapeHtml(sourceDisplayName(source))}</span>`;
+    document.body.appendChild(ghost);
+    return ghost;
+  }
+
+  function escapeHtml(text) {
+    return String(text).replace(/[&<>'"]/g, char => ({
+      '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;'
+    })[char]);
+  }
+
+  function positionDragGhost(x, y) {
+    if (!state.dragGhost) return;
+    state.dragGhost.style.left = `${x + 14}px`;
+    state.dragGhost.style.top = `${y + 14}px`;
+  }
+
+  function labelHeaderAtPoint(x, y) {
+    const el = document.elementFromPoint(x, y);
+    return el?.closest?.(SELECTORS.labelHeader) || null;
+  }
+
+  function updateDragTarget(x, y) {
+    const header = labelHeaderAtPoint(x, y);
+    if (header === state.dragTarget) return header;
+    clearDragStyles();
+    if (header) {
+      state.dragTarget = header;
+      header.classList.add(`${EXT}-drag-over`);
+    }
+    return header;
+  }
+
+  function beginPointerDrag(source, event) {
+    state.pointerDragging = true;
+    state.pointerSource = source;
+    source.classList.add(`${EXT}-dragging`);
+    document.documentElement.classList.add(`${EXT}-drag-active`);
+    state.dragGhost = createDragGhost(source);
+    positionDragGhost(event.clientX, event.clientY);
+    updateDragTarget(event.clientX, event.clientY);
+  }
+
+  function resetPointerDrag() {
+    state.pointerSource?.classList.remove(`${EXT}-dragging`);
+    state.dragGhost?.remove();
+    document.documentElement.classList.remove(`${EXT}-drag-active`);
+    clearDragStyles();
+    state.pointerId = null;
+    state.pointerSource = null;
+    state.pointerOrigin = null;
+    state.pointerDragging = false;
+    state.dragGhost = null;
+  }
+
+  function startPointerCandidate(source, event) {
+    if (event.button !== 0 || state.pointerId !== null) return;
+    state.pointerId = event.pointerId;
+    state.pointerSource = source;
+    state.pointerOrigin = { x: event.clientX, y: event.clientY };
+    state.pointerDragging = false;
+
+    try {
+      event.currentTarget?.setPointerCapture?.(event.pointerId);
+    } catch (_) {
+      // Pointer capture is optional; document listeners still handle the drag.
+    }
   }
 
   function installEventHandlers() {
     document.addEventListener('pointerdown', event => {
       const more = event.target.closest?.(SELECTORS.labelMore);
-      if (!more) return;
-      state.lastLabelMenuPoint = { x: event.clientX, y: event.clientY };
-      setTimeout(repositionLabelMenu, 0);
-      setTimeout(repositionLabelMenu, 80);
-    }, true);
+      if (more) {
+        state.lastLabelMenuPoint = { x: event.clientX, y: event.clientY };
+        setTimeout(repositionLabelMenu, 0);
+        setTimeout(repositionLabelMenu, 80);
+        return;
+      }
 
-    document.addEventListener('dragstart', event => {
-      const interactive = event.target.closest?.('button, input, textarea, a, [role="button"], [role="checkbox"]');
-      if (interactive && interactive !== event.target.closest(SELECTORS.sourceCard)) return;
+      const handle = event.target.closest?.(`.${EXT}-drag-handle`);
+      if (handle) {
+        const source = handle.closest(SELECTORS.sourceCard);
+        if (source) {
+          event.preventDefault();
+          event.stopPropagation();
+          startPointerCandidate(source, event);
+        }
+        return;
+      }
 
+      // Also allow dragging from blank/non-interactive parts of the source row.
       const source = event.target.closest?.(SELECTORS.sourceCard);
       if (!source) return;
-
-      state.draggedSource = source;
-      source.classList.add(`${EXT}-dragging`);
-      event.dataTransfer.effectAllowed = 'move';
-      event.dataTransfer.setData('text/plain', 'gemini-notebook-source');
+      const interactive = event.target.closest?.('button, input, textarea, a, [role="button"], [role="checkbox"], mat-checkbox');
+      if (interactive) return;
+      startPointerCandidate(source, event);
     }, true);
 
-    document.addEventListener('dragover', event => {
-      if (!state.draggedSource) return;
-      const header = event.target.closest?.(SELECTORS.labelHeader);
-      if (!header) return;
+    document.addEventListener('pointermove', event => {
+      if (state.pointerId === null || event.pointerId !== state.pointerId || !state.pointerSource) return;
+
+      if (!state.pointerDragging) {
+        const dx = event.clientX - state.pointerOrigin.x;
+        const dy = event.clientY - state.pointerOrigin.y;
+        if (Math.hypot(dx, dy) < 6) return;
+        beginPointerDrag(state.pointerSource, event);
+      }
 
       event.preventDefault();
-      event.dataTransfer.dropEffect = 'move';
-      if (state.dragTarget !== header) {
-        clearDragStyles();
-        state.dragTarget = header;
-        header.classList.add(`${EXT}-drag-over`);
-      }
+      positionDragGhost(event.clientX, event.clientY);
+      updateDragTarget(event.clientX, event.clientY);
     }, true);
 
-    document.addEventListener('dragleave', event => {
-      const header = event.target.closest?.(SELECTORS.labelHeader);
-      if (header && state.dragTarget === header && !header.contains(event.relatedTarget)) {
-        clearDragStyles();
+    document.addEventListener('pointerup', event => {
+      if (state.pointerId === null || event.pointerId !== state.pointerId) return;
+
+      const source = state.pointerSource;
+      const wasDragging = state.pointerDragging;
+      const header = wasDragging ? labelHeaderAtPoint(event.clientX, event.clientY) || state.dragTarget : null;
+      const targetLabel = header ? labelNameForHeader(header) : '';
+
+      if (wasDragging) {
+        event.preventDefault();
+        event.stopPropagation();
+        state.suppressClicksUntil = performance.now() + 400;
       }
-    }, true);
 
-    document.addEventListener('drop', event => {
-      if (!state.draggedSource) return;
-      const header = event.target.closest?.(SELECTORS.labelHeader);
-      if (!header) return;
+      resetPointerDrag();
 
-      event.preventDefault();
-      event.stopPropagation();
-
-      const source = state.draggedSource;
-      const targetLabel = labelNameForHeader(header);
-      clearDragStyles();
-      source.classList.remove(`${EXT}-dragging`);
-      state.draggedSource = null;
-
-      if (!targetLabel) {
-        toast('Could not determine the target label name.', 'error');
+      if (!wasDragging) return;
+      if (!header || !targetLabel) {
+        toast('Drop the source directly on a label name/header.', 'info');
         return;
       }
 
       moveSourceExclusively(source, targetLabel).catch(error => {
-        console.error('[Gemini Notebook Label UX] drag/drop move failed', error);
+        console.error('[Gemini Notebook Label UX] pointer drag/drop move failed', error);
         toast('Could not move the source.', 'error');
       });
     }, true);
 
-    document.addEventListener('dragend', () => {
-      state.draggedSource?.classList.remove(`${EXT}-dragging`);
-      state.draggedSource = null;
-      clearDragStyles();
+    document.addEventListener('pointercancel', event => {
+      if (state.pointerId !== null && event.pointerId === state.pointerId) resetPointerDrag();
+    }, true);
+
+    // Suppress the click generated after a completed drag so Notebook does not
+    // open the source or toggle a label after we drop it.
+    document.addEventListener('click', event => {
+      if (event.isTrusted && performance.now() < state.suppressClicksUntil) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+      }
+    }, true);
+
+    // Prevent native browser dragging from competing with the pointer drag.
+    document.addEventListener('dragstart', event => {
+      if (event.target.closest?.(SELECTORS.sourceCard)) event.preventDefault();
     }, true);
   }
 
@@ -406,5 +541,5 @@
   });
 
   observer.observe(document.documentElement, { childList: true, subtree: true });
-  console.info('[Gemini Notebook Label UX] v0.1.0 loaded');
+  console.info(`[Gemini Notebook Label UX] v${VERSION} loaded`);
 })();
