@@ -2,7 +2,7 @@
   'use strict';
 
   const EXT = 'gnb-label-ux';
-  const VERSION = '0.1.1';
+  const VERSION = '0.1.2';
   const SELECTORS = {
     sourcePicker: 'source-picker',
     sourceCard: '.single-source-container, .source-item-container',
@@ -265,43 +265,169 @@
     state.dragTarget = null;
   }
 
+  function checkboxState(checkbox) {
+    if (!checkbox) return null;
+    if (typeof checkbox.checked === 'boolean') return checkbox.checked;
+    const aria = checkbox.getAttribute?.('aria-checked');
+    if (aria === 'true') return true;
+    if (aria === 'false') return false;
+    return null;
+  }
+
   function checkedState(entry) {
     if (!entry) return false;
-    if (entry.checkbox && typeof entry.checkbox.checked === 'boolean') return entry.checkbox.checked;
-    const ariaHost = entry.item.closest('[aria-checked]') || entry.item.querySelector('[aria-checked]') || entry.item;
-    return ariaHost.getAttribute?.('aria-checked') === 'true';
+
+    const direct = checkboxState(entry.checkbox);
+    if (direct !== null) return direct;
+
+    const hosts = [
+      entry.checkbox?.closest?.('mat-checkbox'),
+      entry.item?.closest?.('[aria-checked]'),
+      entry.item?.querySelector?.('[aria-checked]'),
+      entry.item
+    ].filter(Boolean);
+
+    for (const host of hosts) {
+      const aria = host.getAttribute?.('aria-checked');
+      if (aria === 'true') return true;
+      if (aria === 'false') return false;
+      if (host.classList?.contains('mdc-checkbox--selected') || host.querySelector?.('.mdc-checkbox--selected')) return true;
+    }
+
+    return false;
+  }
+
+  function labelTextFromCheckbox(checkbox) {
+    if (!checkbox) return '';
+    const aria = normalize(checkbox.getAttribute('aria-label'));
+    if (aria) return aria;
+
+    const labelledBy = checkbox.getAttribute('aria-labelledby');
+    if (labelledBy) {
+      const text = labelledBy.split(/\s+/)
+        .map(id => normalize(document.getElementById(id)?.textContent))
+        .filter(Boolean)
+        .join(' ');
+      if (text) return text;
+    }
+
+    const menuItem = checkbox.closest('[role="menuitem"], [role="menuitemcheckbox"]');
+    const menuText = normalize(menuItem?.textContent);
+    if (menuText) return menuText;
+
+    const matCheckbox = checkbox.closest('mat-checkbox');
+    const matText = normalize(matCheckbox?.textContent);
+    if (matText) return matText;
+
+    const label = checkbox.closest('label') || checkbox.parentElement?.querySelector?.('label');
+    return normalize(label?.textContent);
   }
 
   function currentMoveItems() {
-    return menuItems()
-      .map(item => ({
-        item,
-        checkbox: item.querySelector(SELECTORS.moveCheckbox),
-        name: normalize(item.textContent)
-      }))
-      .filter(entry => entry.checkbox || entry.item.getAttribute('role') === 'menuitemcheckbox');
+    const overlays = [...document.querySelectorAll('.cdk-overlay-container, .cdk-overlay-pane')];
+    const roots = overlays.length ? overlays : [document];
+    const entries = [];
+    const seen = new Set();
+
+    // The current Gemini Notebook implementation renders a native Material
+    // checkbox for every label.  Start from those checkboxes because their
+    // surrounding element structure has changed more often than the checkbox.
+    for (const root of roots) {
+      for (const checkbox of root.querySelectorAll(SELECTORS.moveCheckbox)) {
+        const item = checkbox.closest('[role="menuitem"], [role="menuitemcheckbox"]') ||
+          checkbox.closest('button, mat-checkbox, label') || checkbox.parentElement;
+        if (!item) continue;
+
+        const name = labelTextFromCheckbox(checkbox) || normalize(item.textContent);
+        if (!name) continue;
+
+        const key = `${name.toLowerCase()}::${entries.length}`;
+        if (seen.has(checkbox)) continue;
+        seen.add(checkbox);
+        entries.push({ item, checkbox, name, key });
+      }
+    }
+
+    // Fallback for variants where the checkbox is represented by aria-checked
+    // but no native input is exposed to the content script.
+    for (const item of document.querySelectorAll('.cdk-overlay-container [role="menuitemcheckbox"], .cdk-overlay-container [role="menuitem"][aria-checked]')) {
+      if (!visible(item)) continue;
+      const name = normalize(item.getAttribute('aria-label')) || normalize(item.textContent);
+      if (!name) continue;
+      if (entries.some(entry => entry.item === item || entry.name.toLowerCase() === name.toLowerCase())) continue;
+      entries.push({ item, checkbox: null, name, key: name.toLowerCase() });
+    }
+
+    return entries;
+  }
+
+  function comparableLabel(value) {
+    return normalize(value)
+      .replace(/[\u200B-\u200D\uFEFF]/g, '')
+      .replace(/\s*\(\d+\)\s*$/, '')
+      .trim()
+      .toLowerCase();
   }
 
   function itemForLabel(items, labelName) {
-    const wanted = normalize(labelName).toLowerCase();
-    return items.find(entry => entry.name.toLowerCase() === wanted) ||
-      items.find(entry => entry.name.toLowerCase().endsWith(wanted)) ||
-      items.find(entry => entry.name.toLowerCase().includes(wanted));
+    const wanted = comparableLabel(labelName);
+    if (!wanted) return null;
+
+    return items.find(entry => comparableLabel(entry.name) === wanted) ||
+      items.find(entry => comparableLabel(entry.checkbox?.getAttribute?.('aria-label')) === wanted) ||
+      items.find(entry => comparableLabel(entry.name).endsWith(wanted)) ||
+      items.find(entry => comparableLabel(entry.name).includes(wanted));
   }
 
-  async function toggleMoveItem(entry) {
-    if (!entry) return;
-    const before = checkedState(entry);
-    entry.item.click();
-    await waitFor(() => {
-      const items = currentMoveItems();
-      const refreshed = items.find(x => normalize(x.name).toLowerCase() === normalize(entry.name).toLowerCase());
-      return refreshed && checkedState(refreshed) !== before ? true : null;
-    }, 1200, 40);
-    await sleep(80);
+  function entryStillExists(labelName) {
+    return itemForLabel(currentMoveItems(), labelName);
+  }
+
+  async function clickMoveEntry(entry, desiredState) {
+    if (!entry) return false;
+    const labelName = entry.name;
+
+    const isDesired = () => {
+      const refreshed = entryStillExists(labelName);
+      return refreshed && checkedState(refreshed) === desiredState ? refreshed : null;
+    };
+
+    if (isDesired()) return true;
+
+    const attempts = [];
+    if (entry.checkbox) attempts.push(entry.checkbox);
+    const matCheckbox = entry.checkbox?.closest?.('mat-checkbox');
+    if (matCheckbox && !attempts.includes(matCheckbox)) attempts.push(matCheckbox);
+    if (entry.item && !attempts.includes(entry.item)) attempts.push(entry.item);
+
+    for (const target of attempts) {
+      try {
+        target.click();
+      } catch (_) {
+        try {
+          target.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+        } catch (_) {}
+      }
+
+      const changed = await waitFor(isDesired, 1400, 40);
+      if (changed) {
+        await sleep(90);
+        return true;
+      }
+    }
+
+    return false;
   }
 
   function closeOpenMenu() {
+    const sourcePicker = document.querySelector(SELECTORS.sourcePicker);
+    const safeTarget = sourcePicker || document.body;
+    try {
+      safeTarget.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window }));
+      safeTarget.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, view: window }));
+      safeTarget.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+    } catch (_) {}
+
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true }));
     document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true }));
   }
@@ -325,35 +451,115 @@
       return false;
     }
 
+    // Some Material menu versions open a submenu on hover while others open on
+    // click. Fire both paths; the second event is harmless when already open.
+    try {
+      moveTo.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true, view: window }));
+      moveTo.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, view: window }));
+    } catch (_) {}
     moveTo.click();
+
     const ready = await waitFor(() => {
       const items = currentMoveItems();
       return itemForLabel(items, targetLabel) ? items : null;
-    }, 5000);
+    }, 6000, 60);
 
     if (!ready) {
-      closeOpenMenu();
-      toast(`Could not find the “${targetLabel}” label in Move to.`, 'error');
+      const found = currentMoveItems().map(entry => entry.name).filter(Boolean).slice(0, 5);
+      console.warn('[Gemini Notebook Label UX] Move-to label match failed', { targetLabel, found });
+      toast(found.length
+        ? `Move to opened, but “${targetLabel}” was not matched. Found: ${found.join(', ')}`
+        : `Move to opened, but no label checkboxes were detected.`, 'error');
+      // Leave the native Move to menu open so the user can still finish the
+      // action manually and so a screenshot clearly shows the DOM variant.
       return false;
     }
 
-    // Dropping means MOVE: target checked, all other labels unchecked.
-    let items = currentMoveItems();
-    let target = itemForLabel(items, targetLabel);
-    if (target && !checkedState(target)) {
-      await toggleMoveItem(target);
+    // Dropping means MOVE. Check the destination FIRST. If the source row is
+    // currently rendered inside a label panel, unchecking that original label
+    // can remove the row and destroy its anchored Material menu. Keeping the
+    // destination membership established first prevents a transient unlabeled
+    // state, and clearing the original label last gives Angular the best chance
+    // to keep the submenu alive until the operation is complete.
+    let target = itemForLabel(currentMoveItems(), targetLabel);
+    if (!target) {
+      toast(`Destination label “${targetLabel}” disappeared from Move to.`, 'error');
+      return false;
     }
 
-    for (let guard = 0; guard < 80; guard++) {
-      items = currentMoveItems();
+    if (!checkedState(target)) {
+      const changed = await clickMoveEntry(target, true);
+      if (!changed) {
+        console.warn('[Gemini Notebook Label UX] Could not check destination label', targetLabel);
+        toast(`Move to opened, but Gemini Notebook would not select “${targetLabel}”.`, 'error');
+        return false;
+      }
+    }
+
+    const originPanel = source.closest('mat-expansion-panel');
+    const originLabel = originPanel ? labelNameForHeader(originPanel.querySelector(SELECTORS.labelHeader)) : '';
+
+    // Remove extra memberships other than the panel the dragged row currently
+    // lives in. Removing the origin is deliberately deferred until last.
+    for (let guard = 0; guard < 50; guard++) {
+      const items = currentMoveItems();
       const refreshedTarget = itemForLabel(items, targetLabel);
-      const otherChecked = items.find(entry => entry !== refreshedTarget && checkedState(entry));
-      if (!otherChecked) break;
-      await toggleMoveItem(otherChecked);
+      if (!refreshedTarget) break;
+
+      const extra = items.find(entry =>
+        entry !== refreshedTarget &&
+        checkedState(entry) &&
+        (!originLabel || comparableLabel(entry.name) !== comparableLabel(originLabel))
+      );
+      if (!extra) break;
+
+      const changed = await clickMoveEntry(extra, false);
+      if (!changed) {
+        console.warn('[Gemini Notebook Label UX] Could not uncheck extra source label', extra.name);
+        toast(`Could not remove the old label “${extra.name}”.`, 'error');
+        return false;
+      }
+    }
+
+    // Finally remove the origin label, but only when it differs from the drop
+    // target. This click may cause Notebook to rerender/close the menu, which
+    // is fine because all required membership changes have already happened.
+    if (originLabel && comparableLabel(originLabel) !== comparableLabel(targetLabel)) {
+      const originEntry = itemForLabel(currentMoveItems(), originLabel);
+      if (originEntry && checkedState(originEntry)) {
+        const changed = await clickMoveEntry(originEntry, false);
+        if (!changed) {
+          // The row can disappear immediately after Angular accepts the click,
+          // taking the overlay with it. Treat a vanished menu as success here.
+          const overlayGone = currentMoveItems().length === 0;
+          if (!overlayGone) {
+            console.warn('[Gemini Notebook Label UX] Could not uncheck origin source label', originLabel);
+            toast(`Could not remove the original label “${originLabel}”.`, 'error');
+            return false;
+          }
+        }
+      }
+    }
+
+    // Final verification when the menu remains open. If Angular closed the
+    // overlay after removing the origin row, the accepted state changes above
+    // are the authoritative signal and we can finish successfully.
+    const finalItems = currentMoveItems();
+    if (finalItems.length) {
+      const finalTarget = itemForLabel(finalItems, targetLabel);
+      const stray = finalItems.find(entry => entry !== finalTarget && checkedState(entry));
+      if (!finalTarget || !checkedState(finalTarget) || stray) {
+        console.warn('[Gemini Notebook Label UX] Move verification failed', {
+          targetLabel,
+          labels: finalItems.map(entry => ({ name: entry.name, checked: checkedState(entry) }))
+        });
+        toast('The Move to menu changed, so I did not close it. Please finish this move manually.', 'error');
+        return false;
+      }
     }
 
     closeOpenMenu();
-    await sleep(120);
+    await sleep(180);
     toast(`Moved source to “${targetLabel}”.`, 'success');
     return true;
   }

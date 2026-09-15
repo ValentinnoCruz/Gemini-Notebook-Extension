@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Gemini Notebook Label UX",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Improves Gemini Notebook source labels with a direct Add new label button, correctly positioned label menus, and reliable pointer-based drag-and-drop source moving.",
   "content_scripts": [
     {

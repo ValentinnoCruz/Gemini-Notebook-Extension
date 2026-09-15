@@ -1,4 +1,4 @@
-# Gemini Notebook Label UX v0.1.1
+# Gemini Notebook Label UX v0.1.2
 
 A small Manifest V3 Chrome extension that improves source-label management in Gemini Notebook / NotebookLM.
 
