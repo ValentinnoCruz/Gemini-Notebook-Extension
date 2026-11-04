@@ -1,21 +1,34 @@
 {
   "manifest_version": 3,
-  "name": "Gemini Notebook Label UX",
-  "version": "0.1.2",
-  "description": "Improves Gemini Notebook source labels with a direct Add new label button, correctly positioned label menus, and reliable pointer-based drag-and-drop source moving.",
+  "name": "Gemini Notebook PowerTools",
+  "version": "1.0.0",
+  "description": "All-in-one suite for Gemini Notebook & NotebookLM: drag-and-drop source labels, UX fixes, and one-click source exporting (Markdown, text, ZIP).",
+  "action": {
+    "default_title": "Gemini Notebook PowerTools",
+    "default_popup": "popup.html"
+  },
   "content_scripts": [
     {
       "matches": [
-        "https://notebooklm.google.com/*",
-        "https://notebook.google.com/*"
+        "https://notebook.google.com/*",
+        "https://notebook.google/*",
+        "https://notebooklm.google.com/*"
       ],
       "js": [
-        "content.js"
+        "zip.js",
+        "label-ux.js",
+        "source-exporter.js"
       ],
       "css": [
-        "styles.css"
+        "label-ux.css",
+        "source-exporter.css"
       ],
       "run_at": "document_idle"
     }
-  ]
+  ],
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
 }
