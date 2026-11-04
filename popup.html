@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="popup.css">
+  <title>Gemini Notebook PowerTools</title>
+</head>
+<body>
+  <div class="heading">
+    <div class="mark">⚡</div>
+    <div>
+      <strong>Gemini Notebook</strong>
+      <small>PowerTools v1.0.0</small>
+    </div>
+  </div>
+
+  <div class="feature-list">
+    <div class="feature-item">
+      <span class="icon">🏷️</span>
+      <div class="info">
+        <strong>Label UX & Drag-and-Drop</strong>
+        <span>Inline "Add label" button, menu fix, and drag handles.</span>
+      </div>
+    </div>
+    <div class="feature-item">
+      <span class="icon">📦</span>
+      <div class="info">
+        <strong>Source Downloader</strong>
+        <span>Batch export readable source text as ZIP, MD, or TXT.</span>
+      </div>
+    </div>
+  </div>
+
+  <button id="launch">Open Source Downloader</button>
+
+  <p class="status" id="status" role="status">Active on NotebookLM / Gemini Notebook</p>
+  <p class="footnote">Client-side only. No outside servers, account login, or API keys required.</p>
+  <script src="popup.js"></script>
+</body>
+</html>

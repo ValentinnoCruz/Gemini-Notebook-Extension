@@ -1,28 +1,55 @@
-# Gemini Notebook Label UX v0.1.2
+# Gemini Notebook PowerTools
 
-A small Manifest V3 Chrome extension that improves source-label management in Gemini Notebook / NotebookLM.
+An all-in-one Chrome extension that supercharges **Gemini Notebook / NotebookLM** with intuitive source-organization tools, label drag-and-drop, and one-click source exporting.
+
+---
 
 ## Features
 
-- Adds a dedicated **Add new label** button.
-- Automatically opens a newly created `New Label` in rename mode.
-- Repositions the label `...` menu beside the pointer instead of the upper-left corner.
-- Adds a small **⠿ drag handle** to every source.
-- Uses extension-controlled pointer dragging instead of native browser HTML5 drag/drop, which is more reliable inside Gemini Notebook's Angular UI.
-- Dropping a source on a label performs an exclusive move to that label.
-- Gemini Notebook's native **Move to** menu remains available when you want a source assigned to multiple labels.
+### 1. 🏷️ Label UX & Source Organization
+* **Dedicated "Add new label" button:** Quickly create new source labels right in the sidebar without opening submenus.
+* **Smart auto-focus:** Immediately opens newly created labels in rename mode.
+* **Repositioned 3-dot menus:** Keeps the label options menu right beside your mouse cursor rather than stuck at the top corner of the screen.
+* **Reliable Drag-and-Drop:** Adds a dedicated `⠿` handle beside each source item to drag and drop sources directly into labels using pointer events (bypassing Angular UI event drops).
+* **Exclusive Move:** Dropping a source onto a label moves it cleanly.
 
-## Install / update
+### 2. 📦 Source Downloader & Exporter
+* **One-Click Export UI:** Floating `Export sources` action button and popup launcher to open the export tray.
+* **Batch or Single Downloads:** Save sources individually as Markdown (`.md`) or Plain Text (`.txt`), or bundle selected sources into an in-memory `.zip` archive.
+* **Zero Dependencies:** Pure in-memory ZIP writer (`zip.js`) without external libraries or tracking.
+* **Audit Report:** Generates an `EXPORT-REPORT.json` inside exports with processing status, timestamps, and warnings.
 
-1. Extract the ZIP.
-2. Open `chrome://extensions`.
-3. Turn on **Developer mode**.
-4. If v0.1.0 is already loaded, click **Remove** on it (or point its existing unpacked extension to this new folder).
-5. Click **Load unpacked** and select the `gemini-notebook-label-ux` folder.
-6. Refresh any open Gemini Notebook tabs.
+---
 
-## Dragging
+## Installation (Unpacked)
 
-Grab the **⠿** handle beside a source, drag it over a label header/name, and release when the label highlights.
+1. Clone or download this repository.
+2. Open Chrome and navigate to `chrome://extensions`.
+3. Enable **Developer mode** in the top-right corner.
+4. Click **Load unpacked** and select this directory.
+5. Open [NotebookLM / Gemini Notebook](https://notebooklm.google.com/) and reload the page.
 
-You can also begin dragging from a blank, non-interactive part of a source row. The handle is the most reliable method.
+---
+
+## Extension Structure
+
+```
+├── manifest.json         # Manifest V3 extension configuration
+├── popup.html/js/css     # Toolbar action launcher and status UI
+├── label-ux.js           # Label management & drag-and-drop interactions
+├── label-ux.css          # Drag handle and label button styles
+├── source-exporter.js    # Source viewer text extraction and export modal
+├── source-exporter.css   # Exporter panel and overlay styles
+├── zip.js                # Lightweight zero-dependency in-browser ZIP writer
+├── icons/                # Extension icons (16px, 48px, 128px)
+└── tests/
+    └── zip.test.cjs      # Unit test suite for the ZIP packager
+```
+
+---
+
+## Privacy & Security
+
+* **100% Client-side:** All extraction, labeling, and compression happens entirely inside your local browser.
+* **No external servers:** No data, source text, or user credentials ever leave your browser.
+* **No login or API keys required:** Operates directly on the rendered document views.
